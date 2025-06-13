@@ -33,8 +33,12 @@ pipeline {
             steps {
                 echo '🔁 Restarting Tomcat...'
                 bat '''
-                    echo 🛑 Killing existing Tomcat if running...
-                    taskkill /F /IM java.exe >nul 2>&1
+                    echo 🛑 Killing Tomcat only (not Jenkins)...
+                    for /f "tokens=2 delims==;" %%a in (
+                        'wmic process where "CommandLine like '%%tomcat%%'" get ProcessId /format:list ^| find "ProcessId"'
+                    ) do (
+                        taskkill /F /PID %%a
+                    )
 
                     timeout /T 3 >nul
 
