@@ -14,7 +14,7 @@
 
             <body>
                 <div class="container mt-4">
-                    <h2 class="mb-4">Trang chủ hệ thống hduc 1</h2>
+                    <h2 class="mb-4">Trang chủ hệ thống hduc 2</h2>
                     <nav class="mb-4">
                         <a href="users" class="btn btn-primary me-2">Quản lý người dùng</a>
                         <a href="orders" class="btn btn-success">Danh sách đơn hàng</a>
