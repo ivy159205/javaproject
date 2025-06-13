@@ -2,9 +2,9 @@ pipeline {
     agent any
 
     environment {
-        DEPLOY_DIR_1 = "C:/Program Files/Apache Software Foundation/Tomcat 9.0/webapps8082"
-        DEPLOY_DIR_2 = "C:/Program Files/Apache Software Foundation/Tomcat 9.0/webapps8083"
-        TOMCAT_BIN = "C:/Program Files/Apache Software Foundation/Tomcat 9.0/bin"
+        DEPLOY_DIR_1 = "D:/ApacheTomcat/apache-tomcat-11.0.7/webapps8082"
+        DEPLOY_DIR_2 = "D:/ApacheTomcat/apache-tomcat-11.0.7/webapps8083"
+        TOMCAT_BIN   = "D:/ApacheTomcat/apache-tomcat-11.0.7/bin"
     }
 
     stages {
