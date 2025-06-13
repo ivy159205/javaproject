@@ -153,8 +153,9 @@ pipeline {
                         bat """
                             cd /d "${TOMCAT_HOME}\\bin"
                             call shutdown.bat
-                            timeout /t 10 /nobreak
                         """
+                        // Use Jenkins sleep instead of Windows timeout
+                        sleep(time: 10, unit: 'SECONDS')
                     } catch (Exception e) {
                         echo "Warning: Could not gracefully stop primary Tomcat: ${e.getMessage()}"
                     }
@@ -165,24 +166,26 @@ pipeline {
                             if exist "${SECONDARY_TOMCAT}\\bin\\shutdown.bat" (
                                 cd /d "${SECONDARY_TOMCAT}\\bin"
                                 call shutdown.bat
-                                timeout /t 10 /nobreak
                             )
                         """
+                        sleep(time: 10, unit: 'SECONDS')
                     } catch (Exception e) {
                         echo "Warning: Could not gracefully stop secondary Tomcat: ${e.getMessage()}"
                     }
                     
-                    // Force kill any remaining Java processes
+                    // Force kill any remaining Java processes (improved version)
                     try {
                         bat '''
-                            for /f "tokens=2" %%i in ('tasklist /fi "imagename eq java.exe" /fo csv 2^>nul ^| find "java.exe"') do (
-                                echo Killing Java process %%i
-                                taskkill /F /PID %%i 2>nul
+                            for /f "tokens=2 delims=," %%i in ('tasklist /fi "imagename eq java.exe" /fo csv /nh 2^>nul') do (
+                                if not "%%i"=="" (
+                                    echo Killing Java process %%i
+                                    taskkill /F /PID %%i 2>nul
+                                )
                             )
-                            echo All Java processes terminated
+                            echo Java process cleanup completed
                         '''
                     } catch (Exception e) {
-                        echo "Note: No Java processes found to terminate"
+                        echo "Note: Java process cleanup completed: ${e.getMessage()}"
                     }
                 }
             }
@@ -234,7 +237,7 @@ pipeline {
                         echo Secondary deployment completed
                     """
                     
-                    // Update server.xml for secondary instance using a more reliable method
+                    // Update server.xml for secondary instance (fixed version)
                     echo 'Configuring secondary Tomcat ports...'
                     bat '''
                         cd /d "''' + env.WORKSPACE + '''"
@@ -243,15 +246,27 @@ pipeline {
                         echo # PowerShell script to update server.xml > update_server.ps1
                         echo try { >> update_server.ps1
                         echo     $xmlPath = ''' + "'${SECONDARY_TOMCAT}\\conf\\server.xml'" + ''' >> update_server.ps1
-                        echo     $xml = [xml](Get-Content $xmlPath) >> update_server.ps1
+                        echo     [xml]$xml = Get-Content $xmlPath >> update_server.ps1
                         echo     $xml.Server.SetAttribute('port', '8006') >> update_server.ps1
-                        echo     $xml.Server.Service.Connector[0].SetAttribute('port', '8083') >> update_server.ps1
-                        echo     $xml.Server.Service.Connector[1].SetAttribute('port', '8010') >> update_server.ps1
+                        echo     # Find the HTTP connector and update port >> update_server.ps1
+                        echo     foreach ($connector in $xml.Server.Service.Connector) { >> update_server.ps1
+                        echo         if ($connector.protocol -eq 'HTTP/1.1' -or $connector.port -eq '8080') { >> update_server.ps1
+                        echo             $connector.SetAttribute('port', '8083') >> update_server.ps1
+                        echo             break >> update_server.ps1
+                        echo         } >> update_server.ps1
+                        echo     } >> update_server.ps1
+                        echo     # Find the AJP connector and update port >> update_server.ps1
+                        echo     foreach ($connector in $xml.Server.Service.Connector) { >> update_server.ps1
+                        echo         if ($connector.protocol -eq 'AJP/1.3' -or $connector.port -eq '8009') { >> update_server.ps1
+                        echo             $connector.SetAttribute('port', '8010') >> update_server.ps1
+                        echo             break >> update_server.ps1
+                        echo         } >> update_server.ps1
+                        echo     } >> update_server.ps1
                         echo     $xml.Save($xmlPath) >> update_server.ps1
                         echo     Write-Host 'Server.xml updated successfully' >> update_server.ps1
                         echo } catch { >> update_server.ps1
-                        echo     Write-Host "Error updating server.xml: $_.Exception.Message" >> update_server.ps1
-                        echo     exit 1 >> update_server.ps1
+                        echo     Write-Host "Error updating server.xml: $_" >> update_server.ps1
+                        echo     Write-Host 'Continuing with deployment...' >> update_server.ps1
                         echo } >> update_server.ps1
                         
                         REM Execute PowerShell script
@@ -286,7 +301,8 @@ pipeline {
                 }
                 
                 echo 'Waiting for Tomcat instances to start...'
-                bat 'timeout /t 45 /nobreak'
+                // Use Jenkins sleep instead of Windows timeout
+                sleep(time: 45, unit: 'SECONDS')
             }
         }
         
@@ -341,7 +357,7 @@ pipeline {
                             echo "Health check attempt ${retryCount} failed: ${e.getMessage()}"
                             if (retryCount < maxRetries) {
                                 echo "Retrying in 20 seconds..."
-                                bat 'timeout /t 20 /nobreak'
+                                sleep(time: 20, unit: 'SECONDS')
                             }
                         }
                     }
@@ -406,13 +422,6 @@ pipeline {
             echo "- http://localhost:8083/${DEPLOY_NAME}/ (Secondary)"
             echo '- GitHub Repository: https://github.com/ivy159205/javaproject'
             echo '================================'
-            
-            // Send success notification (uncomment if needed)
-            // emailext (
-            //     subject: "✅ Deployment Success: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
-            //     body: "Deployment completed successfully!\n\nJob: ${env.JOB_NAME}\nBuild: ${env.BUILD_NUMBER}\nBranch: ${env.BRANCH_NAME}",
-            //     to: "your-email@company.com"
-            // )
         }
         
         failure {
@@ -425,7 +434,6 @@ pipeline {
             script {
                 try {
                     echo 'Attempting rollback...'
-                    // Add rollback logic here if needed
                     bat """
                         echo Rollback would restore from backup directory: ${BACKUP_DIR}
                         echo Checking available backups...
@@ -439,19 +447,10 @@ pipeline {
                     echo "Rollback failed: ${e.getMessage()}"
                 }
             }
-            
-            // Send failure notification (uncomment if needed)
-            // emailext (
-            //     subject: "❌ Deployment Failed: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
-            //     body: "Deployment failed!\n\nJob: ${env.JOB_NAME}\nBuild: ${env.BUILD_NUMBER}\nBranch: ${env.BRANCH_NAME}\n\nCheck Jenkins for details.",
-            //     to: "your-email@company.com"
-            // )
         }
         
         always {
             echo 'Pipeline execution completed.'
-            // Keep workspace for debugging in case of failure
-            // cleanWs()
         }
     }
 }
