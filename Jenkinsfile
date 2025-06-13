@@ -41,11 +41,9 @@ pipeline {
         stage('Checkout') {
             steps {
                 echo 'Checking out source code from GitHub...'
-                git branch: 'main', url: 'https://github.com/ivy159205/javaproject.git'
-                
-                // Backup: Copy từ local path nếu Git fail
                 script {
                     try {
+                        git branch: 'main', url: 'https://github.com/ivy159205/javaproject.git'
                         echo 'Git checkout completed successfully'
                     } catch (Exception e) {
                         echo "Git checkout failed: ${e.getMessage()}"
@@ -89,7 +87,6 @@ pipeline {
             }
             post {
                 always {
-                    // Publish test results
                     script {
                         if (fileExists('**/target/surefire-reports/*.xml')) {
                             junit '**/target/surefire-reports/*.xml'
@@ -148,20 +145,20 @@ pipeline {
             steps {
                 echo 'Stopping Tomcat servers...'
                 script {
+                    // Stop primary Tomcat
                     try {
-                        // Stop primary Tomcat
                         bat """
                             cd /d "${TOMCAT_HOME}\\bin"
                             call shutdown.bat
                         """
-                        // Use Jenkins sleep instead of Windows timeout
                         sleep(time: 10, unit: 'SECONDS')
+                        echo "Primary Tomcat shutdown command sent"
                     } catch (Exception e) {
                         echo "Warning: Could not gracefully stop primary Tomcat: ${e.getMessage()}"
                     }
                     
+                    // Stop secondary Tomcat if exists
                     try {
-                        // Stop secondary Tomcat if exists
                         bat """
                             if exist "${SECONDARY_TOMCAT}\\bin\\shutdown.bat" (
                                 cd /d "${SECONDARY_TOMCAT}\\bin"
@@ -169,11 +166,12 @@ pipeline {
                             )
                         """
                         sleep(time: 10, unit: 'SECONDS')
+                        echo "Secondary Tomcat shutdown command sent"
                     } catch (Exception e) {
                         echo "Warning: Could not gracefully stop secondary Tomcat: ${e.getMessage()}"
                     }
                     
-                    // Force kill any remaining Java processes (improved version)
+                    // Force kill any remaining Java processes
                     try {
                         bat '''
                             for /f "tokens=2 delims=," %%i in ('tasklist /fi "imagename eq java.exe" /fo csv /nh 2^>nul') do (
@@ -184,8 +182,9 @@ pipeline {
                             )
                             echo Java process cleanup completed
                         '''
+                        sleep(time: 5, unit: 'SECONDS')
                     } catch (Exception e) {
-                        echo "Note: Java process cleanup completed: ${e.getMessage()}"
+                        echo "Java process cleanup completed: ${e.getMessage()}"
                     }
                 }
             }
@@ -237,35 +236,40 @@ pipeline {
                         echo Secondary deployment completed
                     """
                     
-                    // Update server.xml for secondary instance (fixed version)
+                    // Update server.xml for secondary instance
                     echo 'Configuring secondary Tomcat ports...'
                     bat '''
                         cd /d "''' + env.WORKSPACE + '''"
                         
                         REM Create PowerShell script to update server.xml
                         echo # PowerShell script to update server.xml > update_server.ps1
+                        echo $ErrorActionPreference = 'Continue' >> update_server.ps1
                         echo try { >> update_server.ps1
                         echo     $xmlPath = ''' + "'${SECONDARY_TOMCAT}\\conf\\server.xml'" + ''' >> update_server.ps1
+                        echo     Write-Host "Updating server.xml at: $xmlPath" >> update_server.ps1
                         echo     [xml]$xml = Get-Content $xmlPath >> update_server.ps1
+                        echo     # Update shutdown port >> update_server.ps1
                         echo     $xml.Server.SetAttribute('port', '8006') >> update_server.ps1
-                        echo     # Find the HTTP connector and update port >> update_server.ps1
+                        echo     # Find and update HTTP connector >> update_server.ps1
                         echo     foreach ($connector in $xml.Server.Service.Connector) { >> update_server.ps1
                         echo         if ($connector.protocol -eq 'HTTP/1.1' -or $connector.port -eq '8080') { >> update_server.ps1
                         echo             $connector.SetAttribute('port', '8083') >> update_server.ps1
+                        echo             Write-Host "Updated HTTP connector to port 8083" >> update_server.ps1
                         echo             break >> update_server.ps1
                         echo         } >> update_server.ps1
                         echo     } >> update_server.ps1
-                        echo     # Find the AJP connector and update port >> update_server.ps1
+                        echo     # Find and update AJP connector >> update_server.ps1
                         echo     foreach ($connector in $xml.Server.Service.Connector) { >> update_server.ps1
                         echo         if ($connector.protocol -eq 'AJP/1.3' -or $connector.port -eq '8009') { >> update_server.ps1
                         echo             $connector.SetAttribute('port', '8010') >> update_server.ps1
+                        echo             Write-Host "Updated AJP connector to port 8010" >> update_server.ps1
                         echo             break >> update_server.ps1
                         echo         } >> update_server.ps1
                         echo     } >> update_server.ps1
                         echo     $xml.Save($xmlPath) >> update_server.ps1
                         echo     Write-Host 'Server.xml updated successfully' >> update_server.ps1
                         echo } catch { >> update_server.ps1
-                        echo     Write-Host "Error updating server.xml: $_" >> update_server.ps1
+                        echo     Write-Host "Error updating server.xml: $($_.Exception.Message)" >> update_server.ps1
                         echo     Write-Host 'Continuing with deployment...' >> update_server.ps1
                         echo } >> update_server.ps1
                         
@@ -273,7 +277,7 @@ pipeline {
                         powershell -ExecutionPolicy Bypass -File update_server.ps1
                         
                         REM Clean up
-                        del update_server.ps1
+                        del update_server.ps1 2>nul
                     '''
                 }
             }
@@ -287,22 +291,24 @@ pipeline {
                     echo 'Starting primary Tomcat instance...'
                     bat """
                         cd /d "${TOMCAT_HOME}\\bin"
-                        start "Primary Tomcat" /min startup.bat
+                        start "Primary Tomcat 8082" /min startup.bat
                         echo Primary Tomcat starting on port 8082...
                     """
+                    
+                    // Wait a bit before starting secondary
+                    sleep(time: 15, unit: 'SECONDS')
                     
                     // Start secondary Tomcat (8083)
                     echo 'Starting secondary Tomcat instance...'
                     bat """
                         cd /d "${SECONDARY_TOMCAT}\\bin"
-                        start "Secondary Tomcat" /min startup.bat
+                        start "Secondary Tomcat 8083" /min startup.bat
                         echo Secondary Tomcat starting on port 8083...
                     """
                 }
                 
-                echo 'Waiting for Tomcat instances to start...'
-                // Use Jenkins sleep instead of Windows timeout
-                sleep(time: 45, unit: 'SECONDS')
+                echo 'Waiting for Tomcat instances to fully start...'
+                sleep(time: 60, unit: 'SECONDS')
             }
         }
         
@@ -311,58 +317,78 @@ pipeline {
                 echo 'Performing health checks...'
                 script {
                     def healthCheckPassed = false
-                    def maxRetries = 6
+                    def maxRetries = 8
                     def retryCount = 0
                     
                     while (!healthCheckPassed && retryCount < maxRetries) {
-                        try {
-                            retryCount++
-                            echo "Health check attempt ${retryCount}/${maxRetries}..."
+                        retryCount++
+                        echo "Health check attempt ${retryCount}/${maxRetries}..."
+                        
+                        def healthCheckResult = bat returnStatus: true, script: '''
+                            cd /d "''' + env.WORKSPACE + '''"
                             
-                            bat '''
-                                cd /d "''' + env.WORKSPACE + '''"
-                                
-                                REM Create PowerShell health check script
-                                echo # Health check script > health_check.ps1
-                                echo try { >> health_check.ps1
-                                echo     Write-Host 'Checking primary instance (8082)...' >> health_check.ps1
-                                echo     $response8082 = Invoke-WebRequest -Uri 'http://localhost:8082/''' + env.DEPLOY_NAME + '''/' -TimeoutSec 15 -UseBasicParsing >> health_check.ps1
-                                echo     Write-Host "Primary instance status: $($response8082.StatusCode)" >> health_check.ps1
-                                echo. >> health_check.ps1
-                                echo     Write-Host 'Checking secondary instance (8083)...' >> health_check.ps1
-                                echo     $response8083 = Invoke-WebRequest -Uri 'http://localhost:8083/''' + env.DEPLOY_NAME + '''/' -TimeoutSec 15 -UseBasicParsing >> health_check.ps1
-                                echo     Write-Host "Secondary instance status: $($response8083.StatusCode)" >> health_check.ps1
-                                echo. >> health_check.ps1
-                                echo     if ($response8082.StatusCode -eq 200 -and $response8083.StatusCode -eq 200) { >> health_check.ps1
-                                echo         Write-Host 'SUCCESS: Both instances are healthy' >> health_check.ps1
-                                echo         exit 0 >> health_check.ps1
-                                echo     } else { >> health_check.ps1
-                                echo         Write-Host 'FAILED: One or both instances are not responding correctly' >> health_check.ps1
-                                echo         exit 1 >> health_check.ps1
-                                echo     } >> health_check.ps1
-                                echo } catch { >> health_check.ps1
-                                echo     Write-Host "Health check error: $($_.Exception.Message)" >> health_check.ps1
-                                echo     exit 1 >> health_check.ps1
-                                echo } >> health_check.ps1
-                                
-                                REM Execute health check
-                                powershell -ExecutionPolicy Bypass -File health_check.ps1
-                                
-                                REM Clean up
-                                del health_check.ps1
-                            '''
+                            REM Create PowerShell health check script
+                            echo # Health check script > health_check.ps1
+                            echo $ErrorActionPreference = 'Stop' >> health_check.ps1
+                            echo try { >> health_check.ps1
+                            echo     Write-Host 'Checking primary instance (8082)...' >> health_check.ps1
+                            echo     $response8082 = Invoke-WebRequest -Uri 'http://localhost:8082/''' + env.DEPLOY_NAME + '''/' -TimeoutSec 30 -UseBasicParsing >> health_check.ps1
+                            echo     Write-Host "Primary instance status: $($response8082.StatusCode)" >> health_check.ps1
+                            echo. >> health_check.ps1
+                            echo     Write-Host 'Checking secondary instance (8083)...' >> health_check.ps1
+                            echo     $response8083 = Invoke-WebRequest -Uri 'http://localhost:8083/''' + env.DEPLOY_NAME + '''/' -TimeoutSec 30 -UseBasicParsing >> health_check.ps1
+                            echo     Write-Host "Secondary instance status: $($response8083.StatusCode)" >> health_check.ps1
+                            echo. >> health_check.ps1
+                            echo     if ($response8082.StatusCode -eq 200 -and $response8083.StatusCode -eq 200) { >> health_check.ps1
+                            echo         Write-Host 'SUCCESS: Both instances are healthy' >> health_check.ps1
+                            echo         exit 0 >> health_check.ps1
+                            echo     } else { >> health_check.ps1
+                            echo         Write-Host 'FAILED: One or both instances are not responding correctly' >> health_check.ps1
+                            echo         exit 1 >> health_check.ps1
+                            echo     } >> health_check.ps1
+                            echo } catch { >> health_check.ps1
+                            echo     Write-Host "Health check error: $($_.Exception.Message)" >> health_check.ps1
+                            echo     exit 1 >> health_check.ps1
+                            echo } >> health_check.ps1
+                            
+                            REM Execute health check
+                            powershell -ExecutionPolicy Bypass -File health_check.ps1
+                            set HEALTH_RESULT=%ERRORLEVEL%
+                            
+                            REM Clean up
+                            del health_check.ps1 2>nul
+                            
+                            REM Return the actual result
+                            exit %HEALTH_RESULT%
+                        '''
+                        
+                        if (healthCheckResult == 0) {
                             healthCheckPassed = true
-                            echo "Health check passed on attempt ${retryCount}"
-                        } catch (Exception e) {
-                            echo "Health check attempt ${retryCount} failed: ${e.getMessage()}"
+                            echo "✓ Health check passed on attempt ${retryCount}"
+                        } else {
+                            echo "✗ Health check failed on attempt ${retryCount}"
                             if (retryCount < maxRetries) {
-                                echo "Retrying in 20 seconds..."
-                                sleep(time: 20, unit: 'SECONDS')
+                                echo "Waiting 25 seconds before retry..."
+                                sleep(time: 25, unit: 'SECONDS')
                             }
                         }
                     }
                     
                     if (!healthCheckPassed) {
+                        echo "Health check failed after ${maxRetries} attempts. Checking individual instances..."
+                        
+                        // Check individual instances for better error reporting
+                        bat '''
+                            echo Checking individual instances:
+                            echo.
+                            echo Testing Primary (8082):
+                            powershell -Command "try { $r = Invoke-WebRequest 'http://localhost:8082/''' + env.DEPLOY_NAME + '''/' -UseBasicParsing -TimeoutSec 10; Write-Host 'Primary Status:' $r.StatusCode } catch { Write-Host 'Primary Error:' $_.Exception.Message }"
+                            
+                            echo.
+                            echo Testing Secondary (8083):
+                            powershell -Command "try { $r = Invoke-WebRequest 'http://localhost:8083/''' + env.DEPLOY_NAME + '''/' -UseBasicParsing -TimeoutSec 10; Write-Host 'Secondary Status:' $r.StatusCode } catch { Write-Host 'Secondary Error:' $_.Exception.Message }"
+                        '''
+                        
                         error("Health check failed after ${maxRetries} attempts")
                     }
                 }
@@ -385,6 +411,9 @@ pipeline {
                     echo Write-Host 'Checking Tomcat processes...' >> verify.ps1
                     echo Get-Process ^| Where-Object {$_.ProcessName -like '*java*'} ^| Select-Object ProcessName, Id, StartTime ^| Format-Table -AutoSize >> verify.ps1
                     echo. >> verify.ps1
+                    echo Write-Host 'Checking listening ports...' >> verify.ps1
+                    echo netstat -an ^| findstr "8082\\|8083" >> verify.ps1
+                    echo. >> verify.ps1
                     echo Write-Host 'Checking deployed applications...' >> verify.ps1
                     echo if (Test-Path ''' + "'${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}'" + ''') { >> verify.ps1
                     echo     Write-Host '✓ Primary instance (8082): Application deployed and extracted' >> verify.ps1
@@ -406,7 +435,30 @@ pipeline {
                     powershell -ExecutionPolicy Bypass -File verify.ps1
                     
                     REM Clean up
-                    del verify.ps1
+                    del verify.ps1 2>nul
+                '''
+            }
+        }
+        
+        stage('Final Status Check') {
+            steps {
+                echo 'Performing final application accessibility test...'
+                bat '''
+                    echo ================================
+                    echo FINAL APPLICATION STATUS
+                    echo ================================
+                    
+                    echo Testing application accessibility:
+                    echo.
+                    echo Primary instance (8082):
+                    powershell -Command "try { $response = Invoke-WebRequest 'http://localhost:8082/''' + env.DEPLOY_NAME + '''/' -UseBasicParsing -TimeoutSec 15; Write-Host '✓ ACCESSIBLE - Status Code:' $response.StatusCode; Write-Host '  URL: http://localhost:8082/''' + env.DEPLOY_NAME + '''/' } catch { Write-Host '✗ NOT ACCESSIBLE - Error:' $_.Exception.Message }"
+                    
+                    echo.
+                    echo Secondary instance (8083):
+                    powershell -Command "try { $response = Invoke-WebRequest 'http://localhost:8083/''' + env.DEPLOY_NAME + '''/' -UseBasicParsing -TimeoutSec 15; Write-Host '✓ ACCESSIBLE - Status Code:' $response.StatusCode; Write-Host '  URL: http://localhost:8083/''' + env.DEPLOY_NAME + '''/' } catch { Write-Host '✗ NOT ACCESSIBLE - Error:' $_.Exception.Message }"
+                    
+                    echo.
+                    echo ================================
                 '''
             }
         }
@@ -417,10 +469,16 @@ pipeline {
             echo '================================'
             echo 'DEPLOYMENT COMPLETED SUCCESSFULLY!'
             echo '================================'
-            echo 'Application is available at:'
+            echo 'Application should be available at:'
             echo "- http://localhost:8082/${DEPLOY_NAME}/ (Primary)"
             echo "- http://localhost:8083/${DEPLOY_NAME}/ (Secondary)"
             echo '- GitHub Repository: https://github.com/ivy159205/javaproject'
+            echo '================================'
+            echo 'If applications are not accessible, check:'
+            echo '1. Tomcat processes are running'
+            echo '2. Ports 8082 and 8083 are not blocked'
+            echo '3. WAR files have been extracted'
+            echo '4. Check Tomcat logs for errors'
             echo '================================'
         }
         
@@ -429,28 +487,38 @@ pipeline {
             echo 'DEPLOYMENT FAILED!'
             echo '================================'
             echo 'Check the logs above for error details.'
+            echo 'Common issues:'
+            echo '- Port conflicts (8082/8083 already in use)'
+            echo '- Java processes not terminating properly'
+            echo '- WAR file corruption or build issues'
+            echo '- Tomcat configuration problems'
             
-            // Rollback on failure
             script {
                 try {
-                    echo 'Attempting rollback...'
+                    echo 'Collecting failure information...'
                     bat """
-                        echo Rollback would restore from backup directory: ${BACKUP_DIR}
-                        echo Checking available backups...
+                        echo Current Java processes:
+                        tasklist /fi "imagename eq java.exe" /fo table 2>nul
+                        echo.
+                        echo Port usage:
+                        netstat -an | findstr "8082\\|8083" 2>nul
+                        echo.
+                        echo Available backups:
                         if exist "${BACKUP_DIR}" (
-                            dir "${BACKUP_DIR}" /b
+                            dir "${BACKUP_DIR}" /b 2>nul
                         ) else (
                             echo No backup directory found
                         )
                     """
                 } catch (Exception e) {
-                    echo "Rollback failed: ${e.getMessage()}"
+                    echo "Could not collect failure information: ${e.getMessage()}"
                 }
             }
         }
         
         always {
             echo 'Pipeline execution completed.'
+            echo "Build timestamp: ${new Date()}"
         }
     }
 }
