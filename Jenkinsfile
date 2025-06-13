@@ -2,9 +2,9 @@ pipeline {
     agent any
     
     tools {
-        // Định nghĩa Java và Maven versions
-        jdk 'JDK-23' // Hoặc JDK version bạn sử dụng
-        maven 'Maven-3.9.9' // Hoặc Maven version bạn có
+        // Remove tool declarations or use configured tool names
+        // jdk 'JDK-23' // Comment out until tool is configured in Jenkins
+        // maven 'Maven-3.9.9' // Comment out until tool is configured in Jenkins
     }
     
     environment {
@@ -163,55 +163,50 @@ pipeline {
         }
         
         stage('Deploy to Tomcat') {
-            parallel {
-                stage('Deploy to Port 8082') {
-                    steps {
-                        echo 'Deploying to Tomcat port 8082...'
-                        bat """
-                            cd /d "${WORKSPACE}"
-                            if exist "${TOMCAT_WEBAPPS}\\${PROJECT_NAME}" (
-                                rmdir /s /q "${TOMCAT_WEBAPPS}\\${PROJECT_NAME}"
-                            )
-                            if exist "${TOMCAT_WEBAPPS}\\${WAR_FILE}" (
-                                del /f "${TOMCAT_WEBAPPS}\\${WAR_FILE}"
-                            )
-                            copy "target\\${WAR_FILE}" "${TOMCAT_WEBAPPS}\\"
-                            echo Deployed WAR file to ${TOMCAT_WEBAPPS}
-                        """
-                    }
-                }
-                stage('Setup Secondary Instance - Port 8083') {
-                    steps {
-                        echo 'Setting up secondary Tomcat instance on port 8083...'
-                        script {
-                            def secondaryTomcat = 'D:\\ApacheTomcat\\apache-tomcat-11.0.7-secondary'
-                            bat """
-                                cd /d "${WORKSPACE}"
-                                if not exist "${secondaryTomcat}" (
-                                    xcopy "${TOMCAT_HOME}" "${secondaryTomcat}\\" /E /I /Y
-                                    echo Secondary Tomcat instance created
-                                )
-                                
-                                REM Update server.xml for port 8083
-                                powershell -Command "
-                                    \\$content = Get-Content '${secondaryTomcat}\\conf\\server.xml'
-                                    \\$content = \\$content -replace 'port=\"8080\"', 'port=\"8083\"'
-                                    \\$content = \\$content -replace 'port=\"8005\"', 'port=\"8006\"'
-                                    \\$content = \\$content -replace 'port=\"8009\"', 'port=\"8010\"'
-                                    Set-Content '${secondaryTomcat}\\conf\\server.xml' \\$content
-                                "
-                                
-                                REM Deploy to secondary instance
-                                if exist "${secondaryTomcat}\\webapps\\${PROJECT_NAME}" (
-                                    rmdir /s /q "${secondaryTomcat}\\webapps\\${PROJECT_NAME}"
-                                )
-                                if exist "${secondaryTomcat}\\webapps\\${WAR_FILE}" (
-                                    del /f "${secondaryTomcat}\\webapps\\${WAR_FILE}"
-                                )
-                                copy "target\\${WAR_FILE}" "${secondaryTomcat}\\webapps\\"
-                            """
-                        }
-                    }
+            steps {
+                script {
+                    // Deploy to primary instance (8082)
+                    echo 'Deploying to Tomcat port 8082...'
+                    bat """
+                        cd /d "${WORKSPACE}"
+                        if exist "${TOMCAT_WEBAPPS}\\${PROJECT_NAME}" (
+                            rmdir /s /q "${TOMCAT_WEBAPPS}\\${PROJECT_NAME}"
+                        )
+                        if exist "${TOMCAT_WEBAPPS}\\${WAR_FILE}" (
+                            del /f "${TOMCAT_WEBAPPS}\\${WAR_FILE}"
+                        )
+                        copy "target\\${WAR_FILE}" "${TOMCAT_WEBAPPS}\\"
+                        echo Deployed WAR file to ${TOMCAT_WEBAPPS}
+                    """
+                    
+                    // Setup secondary instance (8083)
+                    echo 'Setting up secondary Tomcat instance on port 8083...'
+                    def secondaryTomcat = 'D:\\ApacheTomcat\\apache-tomcat-11.0.7-secondary'
+                    bat """
+                        cd /d "${WORKSPACE}"
+                        if not exist "${secondaryTomcat}" (
+                            xcopy "${TOMCAT_HOME}" "${secondaryTomcat}\\" /E /I /Y
+                            echo Secondary Tomcat instance created
+                        )
+                        
+                        REM Update server.xml for port 8083
+                        powershell -Command "
+                            \\$content = Get-Content '${secondaryTomcat}\\conf\\server.xml'
+                            \\$content = \\$content -replace 'port=\"8080\"', 'port=\"8083\"'
+                            \\$content = \\$content -replace 'port=\"8005\"', 'port=\"8006\"'
+                            \\$content = \\$content -replace 'port=\"8009\"', 'port=\"8010\"'
+                            Set-Content '${secondaryTomcat}\\conf\\server.xml' \\$content
+                        "
+                        
+                        REM Deploy to secondary instance
+                        if exist "${secondaryTomcat}\\webapps\\${PROJECT_NAME}" (
+                            rmdir /s /q "${secondaryTomcat}\\webapps\\${PROJECT_NAME}"
+                        )
+                        if exist "${secondaryTomcat}\\webapps\\${WAR_FILE}" (
+                            del /f "${secondaryTomcat}\\webapps\\${WAR_FILE}"
+                        )
+                        copy "target\\${WAR_FILE}" "${secondaryTomcat}\\webapps\\"
+                    """
                 }
             }
         }
@@ -219,22 +214,21 @@ pipeline {
         stage('Start Tomcat Instances') {
             steps {
                 echo 'Starting Tomcat instances...'
-                parallel(
-                    "Start Primary Tomcat (8082)": {
-                        bat """
-                            cd /d "${TOMCAT_HOME}\\bin"
-                            start /b startup.bat
-                            echo Primary Tomcat starting on port 8082...
-                        """
-                    },
-                    "Start Secondary Tomcat (8083)": {
-                        bat """
-                            cd /d "D:\\ApacheTomcat\\apache-tomcat-11.0.7-secondary\\bin"
-                            start /b startup.bat
-                            echo Secondary Tomcat starting on port 8083...
-                        """
-                    }
-                )
+                script {
+                    // Start primary Tomcat (8082)
+                    bat """
+                        cd /d "${TOMCAT_HOME}\\bin"
+                        start /b startup.bat
+                        echo Primary Tomcat starting on port 8082...
+                    """
+                    
+                    // Start secondary Tomcat (8083)
+                    bat """
+                        cd /d "D:\\ApacheTomcat\\apache-tomcat-11.0.7-secondary\\bin"
+                        start /b startup.bat
+                        echo Secondary Tomcat starting on port 8083...
+                    """
+                }
                 
                 echo 'Waiting for Tomcat instances to start...'
                 bat 'timeout /t 30 /nobreak'
