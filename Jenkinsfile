@@ -1,8 +1,6 @@
 pipeline {
     agent any
     
-    // tools block removed - using environment variables instead
-    
     environment {
         // Đường dẫn Tomcat và Maven
         TOMCAT_HOME = 'D:\\ApacheTomcat\\apache-tomcat-11.0.7'
@@ -27,6 +25,9 @@ pipeline {
         
         // Backup directory
         BACKUP_DIR = 'D:\\deployment-backup'
+        
+        // Secondary Tomcat path
+        SECONDARY_TOMCAT = 'D:\\ApacheTomcat\\apache-tomcat-11.0.7-secondary'
     }
     
     stages {
@@ -114,8 +115,9 @@ pipeline {
                 success {
                     echo 'Archiving WAR file...'
                     script {
-                        if (fileExists('**/target/*.war')) {
-                            archiveArtifacts artifacts: '**/target/*.war', fingerprint: true
+                        if (fileExists('target/*.war')) {
+                            archiveArtifacts artifacts: 'target/*.war', fingerprint: true
+                            echo 'WAR file archived successfully'
                         } else {
                             echo 'No WAR file found to archive'
                         }
@@ -129,38 +131,58 @@ pipeline {
                 echo 'Creating backup of current deployment...'
                 script {
                     def timestamp = new Date().format('yyyyMMdd-HHmmss')
-                        bat """
-                            if not exist "${BACKUP_DIR}" mkdir "${BACKUP_DIR}"
-                            if exist "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" (
-                                xcopy "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" "${BACKUP_DIR}\\${DEPLOY_NAME}-${timestamp}\\" /E /I /Y
-                                echo Backup created at ${BACKUP_DIR}\\${DEPLOY_NAME}-${timestamp}
-                            )
-                        """
+                    bat """
+                        if not exist "${BACKUP_DIR}" mkdir "${BACKUP_DIR}"
+                        if exist "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" (
+                            xcopy "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" "${BACKUP_DIR}\\${DEPLOY_NAME}-${timestamp}\\" /E /I /Y
+                            echo Backup created at ${BACKUP_DIR}\\${DEPLOY_NAME}-${timestamp}
+                        ) else (
+                            echo No existing deployment to backup
+                        )
+                    """
                 }
             }
         }
         
         stage('Stop Tomcat') {
             steps {
-                echo 'Stopping Tomcat server...'
+                echo 'Stopping Tomcat servers...'
                 script {
                     try {
+                        // Stop primary Tomcat
                         bat """
                             cd /d "${TOMCAT_HOME}\\bin"
-                            startup.bat
-                            timeout /t 5 /nobreak
-                            shutdown.bat
+                            call shutdown.bat
                             timeout /t 10 /nobreak
                         """
                     } catch (Exception e) {
-                        echo "Warning: Could not gracefully stop Tomcat: ${e.getMessage()}"
-                        // Force kill Tomcat processes
+                        echo "Warning: Could not gracefully stop primary Tomcat: ${e.getMessage()}"
+                    }
+                    
+                    try {
+                        // Stop secondary Tomcat if exists
+                        bat """
+                            if exist "${SECONDARY_TOMCAT}\\bin\\shutdown.bat" (
+                                cd /d "${SECONDARY_TOMCAT}\\bin"
+                                call shutdown.bat
+                                timeout /t 10 /nobreak
+                            )
+                        """
+                    } catch (Exception e) {
+                        echo "Warning: Could not gracefully stop secondary Tomcat: ${e.getMessage()}"
+                    }
+                    
+                    // Force kill any remaining Java processes
+                    try {
                         bat '''
-                            for /f "tokens=2" %%i in ('tasklist /fi "imagename eq java.exe" /fo csv ^| find "java.exe"') do (
+                            for /f "tokens=2" %%i in ('tasklist /fi "imagename eq java.exe" /fo csv 2^>nul ^| find "java.exe"') do (
+                                echo Killing Java process %%i
                                 taskkill /F /PID %%i 2>nul
                             )
-                            echo Tomcat processes terminated
+                            echo All Java processes terminated
                         '''
+                    } catch (Exception e) {
+                        echo "Note: No Java processes found to terminate"
                     }
                 }
             }
@@ -170,46 +192,73 @@ pipeline {
             steps {
                 script {
                     // Deploy to primary instance (8082)
-                    echo 'Deploying to Tomcat port 8082...'
+                    echo 'Deploying to primary Tomcat instance (port 8082)...'
                     bat """
                         cd /d "${WORKSPACE}"
+                        
+                        REM Clean up existing deployment
                         if exist "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" (
                             rmdir /s /q "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}"
                         )
                         if exist "${TOMCAT_WEBAPPS}\\${WAR_FILE}" (
                             del /f "${TOMCAT_WEBAPPS}\\${WAR_FILE}"
                         )
+                        
+                        REM Deploy new WAR file
                         copy "target\\${WAR_FILE}" "${TOMCAT_WEBAPPS}\\"
-                        echo Deployed WAR file to ${TOMCAT_WEBAPPS}
+                        echo Primary deployment completed
                     """
                     
                     // Setup secondary instance (8083)
-                    echo 'Setting up secondary Tomcat instance on port 8083...'
-                    def secondaryTomcat = 'D:\\ApacheTomcat\\apache-tomcat-11.0.7-secondary'
+                    echo 'Setting up secondary Tomcat instance (port 8083)...'
                     bat """
                         cd /d "${WORKSPACE}"
-                        if not exist "${secondaryTomcat}" (
-                            xcopy "${TOMCAT_HOME}" "${secondaryTomcat}\\" /E /I /Y
+                        
+                        REM Create secondary Tomcat instance if not exists
+                        if not exist "${SECONDARY_TOMCAT}" (
+                            echo Creating secondary Tomcat instance...
+                            xcopy "${TOMCAT_HOME}" "${SECONDARY_TOMCAT}\\" /E /I /Y /Q
                             echo Secondary Tomcat instance created
                         )
                         
-                        REM Update server.xml for port 8083
-                        powershell -Command "
-                            \\$content = Get-Content '${secondaryTomcat}\\conf\\server.xml'
-                            \\$content = \\$content -replace 'port=\"8080\"', 'port=\"8083\"'
-                            \\$content = \\$content -replace 'port=\"8005\"', 'port=\"8006\"'
-                            \\$content = \\$content -replace 'port=\"8009\"', 'port=\"8010\"'
-                            Set-Content '${secondaryTomcat}\\conf\\server.xml' \\$content
-                        "
+                        REM Clean up existing deployment in secondary
+                        if exist "${SECONDARY_TOMCAT}\\webapps\\${DEPLOY_NAME}" (
+                            rmdir /s /q "${SECONDARY_TOMCAT}\\webapps\\${DEPLOY_NAME}"
+                        )
+                        if exist "${SECONDARY_TOMCAT}\\webapps\\${WAR_FILE}" (
+                            del /f "${SECONDARY_TOMCAT}\\webapps\\${WAR_FILE}"
+                        )
                         
                         REM Deploy to secondary instance
-                        if exist "${secondaryTomcat}\\webapps\\${DEPLOY_NAME}" (
-                            rmdir /s /q "${secondaryTomcat}\\webapps\\${DEPLOY_NAME}"
-                        )
-                        if exist "${secondaryTomcat}\\webapps\\${WAR_FILE}" (
-                            del /f "${secondaryTomcat}\\webapps\\${WAR_FILE}"
-                        )
-                        copy "target\\${WAR_FILE}" "${secondaryTomcat}\\webapps\\"
+                        copy "target\\${WAR_FILE}" "${SECONDARY_TOMCAT}\\webapps\\"
+                        echo Secondary deployment completed
+                    """
+                    
+                    // Update server.xml for secondary instance using a more reliable method
+                    echo 'Configuring secondary Tomcat ports...'
+                    bat """
+                        cd /d "${WORKSPACE}"
+                        
+                        REM Create PowerShell script to update server.xml
+                        echo # PowerShell script to update server.xml > update_server.ps1
+                        echo try { >> update_server.ps1
+                        echo     \\$xmlPath = '${SECONDARY_TOMCAT}\\conf\\server.xml' >> update_server.ps1
+                        echo     \\$xml = [xml](Get-Content \\$xmlPath) >> update_server.ps1
+                        echo     \\$xml.Server.SetAttribute('port', '8006') >> update_server.ps1
+                        echo     \\$xml.Server.Service.Connector[0].SetAttribute('port', '8083') >> update_server.ps1
+                        echo     \\$xml.Server.Service.Connector[1].SetAttribute('port', '8010') >> update_server.ps1
+                        echo     \\$xml.Save(\\$xmlPath) >> update_server.ps1
+                        echo     Write-Host 'Server.xml updated successfully' >> update_server.ps1
+                        echo } catch { >> update_server.ps1
+                        echo     Write-Host "Error updating server.xml: \\$_.Exception.Message" >> update_server.ps1
+                        echo     exit 1 >> update_server.ps1
+                        echo } >> update_server.ps1
+                        
+                        REM Execute PowerShell script
+                        powershell -ExecutionPolicy Bypass -File update_server.ps1
+                        
+                        REM Clean up
+                        del update_server.ps1
                     """
                 }
             }
@@ -220,22 +269,24 @@ pipeline {
                 echo 'Starting Tomcat instances...'
                 script {
                     // Start primary Tomcat (8082)
+                    echo 'Starting primary Tomcat instance...'
                     bat """
                         cd /d "${TOMCAT_HOME}\\bin"
-                        start /b startup.bat
+                        start "Primary Tomcat" /min startup.bat
                         echo Primary Tomcat starting on port 8082...
                     """
                     
                     // Start secondary Tomcat (8083)
+                    echo 'Starting secondary Tomcat instance...'
                     bat """
-                        cd /d "D:\\ApacheTomcat\\apache-tomcat-11.0.7-secondary\\bin"
-                        start /b startup.bat
+                        cd /d "${SECONDARY_TOMCAT}\\bin"
+                        start "Secondary Tomcat" /min startup.bat
                         echo Secondary Tomcat starting on port 8083...
                     """
                 }
                 
                 echo 'Waiting for Tomcat instances to start...'
-                bat 'timeout /t 30 /nobreak'
+                bat 'timeout /t 45 /nobreak'
             }
         }
         
@@ -244,40 +295,53 @@ pipeline {
                 echo 'Performing health checks...'
                 script {
                     def healthCheckPassed = false
-                    def maxRetries = 5
+                    def maxRetries = 6
                     def retryCount = 0
                     
                     while (!healthCheckPassed && retryCount < maxRetries) {
                         try {
+                            retryCount++
+                            echo "Health check attempt ${retryCount}/${maxRetries}..."
+                            
                             bat """
-                                powershell -Command "
-                                    try {
-                                        \\$response8082 = Invoke-WebRequest -Uri 'http://localhost:8082/${DEPLOY_NAME}' -TimeoutSec 10
-                                        Write-Host 'Port 8082 Status Code: ' \\$response8082.StatusCode
-                                        
-                                        \\$response8083 = Invoke-WebRequest -Uri 'http://localhost:8083/${DEPLOY_NAME}' -TimeoutSec 10
-                                        Write-Host 'Port 8083 Status Code: ' \\$response8083.StatusCode
-                                        
-                                        if (\\$response8082.StatusCode -eq 200 -and \\$response8083.StatusCode -eq 200) {
-                                            Write-Host 'Health check passed for both instances'
-                                            exit 0
-                                        } else {
-                                            Write-Host 'Health check failed'
-                                            exit 1
-                                        }
-                                    } catch {
-                                        Write-Host 'Health check error: ' \\$_.Exception.Message
-                                        exit 1
-                                    }
-                                "
+                                cd /d "${WORKSPACE}"
+                                
+                                REM Create PowerShell health check script
+                                echo # Health check script > health_check.ps1
+                                echo try { >> health_check.ps1
+                                echo     Write-Host 'Checking primary instance (8082)...' >> health_check.ps1
+                                echo     \\$response8082 = Invoke-WebRequest -Uri 'http://localhost:8082/${DEPLOY_NAME}/' -TimeoutSec 15 -UseBasicParsing >> health_check.ps1
+                                echo     Write-Host "Primary instance status: \\$^(\\$response8082.StatusCode^)" >> health_check.ps1
+                                echo. >> health_check.ps1
+                                echo     Write-Host 'Checking secondary instance (8083)...' >> health_check.ps1
+                                echo     \\$response8083 = Invoke-WebRequest -Uri 'http://localhost:8083/${DEPLOY_NAME}/' -TimeoutSec 15 -UseBasicParsing >> health_check.ps1
+                                echo     Write-Host "Secondary instance status: \\$^(\\$response8083.StatusCode^)" >> health_check.ps1
+                                echo. >> health_check.ps1
+                                echo     if ^(\\$response8082.StatusCode -eq 200 -and \\$response8083.StatusCode -eq 200^) { >> health_check.ps1
+                                echo         Write-Host 'SUCCESS: Both instances are healthy' >> health_check.ps1
+                                echo         exit 0 >> health_check.ps1
+                                echo     } else { >> health_check.ps1
+                                echo         Write-Host 'FAILED: One or both instances are not responding correctly' >> health_check.ps1
+                                echo         exit 1 >> health_check.ps1
+                                echo     } >> health_check.ps1
+                                echo } catch { >> health_check.ps1
+                                echo     Write-Host "Health check error: \\$^(\\$_.Exception.Message^)" >> health_check.ps1
+                                echo     exit 1 >> health_check.ps1
+                                echo } >> health_check.ps1
+                                
+                                REM Execute health check
+                                powershell -ExecutionPolicy Bypass -File health_check.ps1
+                                
+                                REM Clean up
+                                del health_check.ps1
                             """
                             healthCheckPassed = true
+                            echo "Health check passed on attempt ${retryCount}"
                         } catch (Exception e) {
-                            retryCount++
                             echo "Health check attempt ${retryCount} failed: ${e.getMessage()}"
                             if (retryCount < maxRetries) {
-                                echo "Retrying in 15 seconds..."
-                                bat 'timeout /t 15 /nobreak'
+                                echo "Retrying in 20 seconds..."
+                                bat 'timeout /t 20 /nobreak'
                             }
                         }
                     }
@@ -298,23 +362,35 @@ pipeline {
                     echo DEPLOYMENT VERIFICATION
                     echo ================================
                     
-                    powershell -Command "
-                        Write-Host 'Checking Tomcat processes...'
-                        Get-Process | Where-Object {\\$_.ProcessName -like '*java*' -and \\$_.MainWindowTitle -like '*Tomcat*'} | Format-Table ProcessName, Id, MainWindowTitle -AutoSize
-                        
-                        Write-Host 'Checking deployed applications...'
-                        if (Test-Path '${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}') {
-                            Write-Host '✓ Primary instance (8082): Application deployed'
-                        } else {
-                            Write-Host '✗ Primary instance (8082): Application NOT found'
-                        }
-                        
-                        if (Test-Path 'D:\\ApacheTomcat\\apache-tomcat-11.0.7-secondary\\webapps\\${DEPLOY_NAME}') {
-                            Write-Host '✓ Secondary instance (8083): Application deployed'
-                        } else {
-                            Write-Host '✗ Secondary instance (8083): Application NOT found'
-                        }
-                    "
+                    cd /d "${WORKSPACE}"
+                    
+                    REM Create verification script
+                    echo # Deployment verification script > verify.ps1
+                    echo Write-Host 'Checking Tomcat processes...' >> verify.ps1
+                    echo Get-Process ^| Where-Object {\\$_.ProcessName -like '*java*'} ^| Select-Object ProcessName, Id, StartTime ^| Format-Table -AutoSize >> verify.ps1
+                    echo. >> verify.ps1
+                    echo Write-Host 'Checking deployed applications...' >> verify.ps1
+                    echo if ^(Test-Path '${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}'^ ) { >> verify.ps1
+                    echo     Write-Host '✓ Primary instance ^(8082^): Application deployed and extracted' >> verify.ps1
+                    echo } elseif ^(Test-Path '${TOMCAT_WEBAPPS}\\${WAR_FILE}'^ ) { >> verify.ps1
+                    echo     Write-Host '⚠ Primary instance ^(8082^): WAR file present but not extracted yet' >> verify.ps1
+                    echo } else { >> verify.ps1
+                    echo     Write-Host '✗ Primary instance ^(8082^): Application NOT found' >> verify.ps1
+                    echo } >> verify.ps1
+                    echo. >> verify.ps1
+                    echo if ^(Test-Path '${SECONDARY_TOMCAT}\\webapps\\${DEPLOY_NAME}'^ ) { >> verify.ps1
+                    echo     Write-Host '✓ Secondary instance ^(8083^): Application deployed and extracted' >> verify.ps1
+                    echo } elseif ^(Test-Path '${SECONDARY_TOMCAT}\\webapps\\${WAR_FILE}'^ ) { >> verify.ps1
+                    echo     Write-Host '⚠ Secondary instance ^(8083^): WAR file present but not extracted yet' >> verify.ps1
+                    echo } else { >> verify.ps1
+                    echo     Write-Host '✗ Secondary instance ^(8083^): Application NOT found' >> verify.ps1
+                    echo } >> verify.ps1
+                    
+                    REM Execute verification
+                    powershell -ExecutionPolicy Bypass -File verify.ps1
+                    
+                    REM Clean up
+                    del verify.ps1
                 """
             }
         }
@@ -326,8 +402,8 @@ pipeline {
             echo 'DEPLOYMENT COMPLETED SUCCESSFULLY!'
             echo '================================'
             echo 'Application is available at:'
-            echo "- http://localhost:8082/${DEPLOY_NAME} (Primary)"
-            echo "- http://localhost:8083/${DEPLOY_NAME} (Secondary)"
+            echo "- http://localhost:8082/${DEPLOY_NAME}/ (Primary)"
+            echo "- http://localhost:8083/${DEPLOY_NAME}/ (Secondary)"
             echo '- GitHub Repository: https://github.com/ivy159205/javaproject'
             echo '================================'
             
@@ -350,6 +426,15 @@ pipeline {
                 try {
                     echo 'Attempting rollback...'
                     // Add rollback logic here if needed
+                    bat """
+                        echo Rollback would restore from backup directory: ${BACKUP_DIR}
+                        echo Checking available backups...
+                        if exist "${BACKUP_DIR}" (
+                            dir "${BACKUP_DIR}" /b
+                        ) else (
+                            echo No backup directory found
+                        )
+                    """
                 } catch (Exception e) {
                     echo "Rollback failed: ${e.getMessage()}"
                 }
@@ -364,7 +449,7 @@ pipeline {
         }
         
         always {
-            echo 'Cleaning up temporary files...'
+            echo 'Pipeline execution completed.'
             // Keep workspace for debugging in case of failure
             // cleanWs()
         }
