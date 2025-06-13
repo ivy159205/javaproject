@@ -1,20 +1,13 @@
 pipeline {
     agent any
-
     environment {
-        DEPLOY_DIR_1 = "D:/ApacheTomcat/apache-tomcat-11.0.7/webapps8082"
-        DEPLOY_DIR_2 = "D:/ApacheTomcat/apache-tomcat-11.0.7/webapps8083"
-        TOMCAT_BIN   = "D:/ApacheTomcat/apache-tomcat-11.0.7/bin"
+        CATALINA_HOME = "D:/ApacheTomcat/apache-tomcat-11.0.7"
     }
-
     stages {
         stage('Prepare') {
             steps {
-                echo '✅ Create deployment folders if not exist...'
-                bat """
-                    if not exist "${DEPLOY_DIR_1}" mkdir "${DEPLOY_DIR_1}"
-                    if not exist "${DEPLOY_DIR_2}" mkdir "${DEPLOY_DIR_2}"
-                """
+                echo '✅ Create deployment folder if not exist...'
+                bat 'if not exist "%CATALINA_HOME%/webapps" mkdir "%CATALINA_HOME%/webapps"'
             }
         }
 
@@ -25,23 +18,21 @@ pipeline {
             }
         }
 
-        stage('Deploy to Tomcat on Port 8082 & 8083') {
+        stage('Deploy to Tomcat') {
             steps {
-                echo '🚀 Deploying to Tomcat...'
-                bat """
-                    copy /Y target\\*.war "${DEPLOY_DIR_1}"
-                    copy /Y target\\*.war "${DEPLOY_DIR_2}"
-                """
+                echo '🚀 Deploying WAR to Tomcat...'
+                bat 'copy /Y target\\*.war "%CATALINA_HOME%\\webapps\\"'
             }
         }
 
-        stage('Restart Tomcat (Optional)') {
+        stage('Restart Tomcat') {
             steps {
-                echo '🔁 Restarting Tomcat using .bat scripts...'
+                echo '🔁 Restarting Tomcat...'
                 bat """
-                    call "${TOMCAT_BIN}\\shutdown.bat"
+                    set CATALINA_HOME=%CATALINA_HOME%
+                    call "%CATALINA_HOME%\\bin\\shutdown.bat"
                     timeout /T 5 >nul
-                    call "${TOMCAT_BIN}\\startup.bat"
+                    call "%CATALINA_HOME%\\bin\\startup.bat"
                 """
             }
         }
