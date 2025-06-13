@@ -53,7 +53,7 @@ pipeline {
                         bat """
                             if exist "${PROJECT_PATH}" (
                                 echo Copying project from ${PROJECT_PATH}
-                                xcopy "${PROJECT_PATH}" "${WORKSPACE}\\" /E /I /Y
+                                xcopy "${PROJECT_PATH}" "${WORKSPACE}\\\\" /E /I /Y
                                 echo Project copied successfully from local path
                             ) else (
                                 echo ERROR: Both Git and local path failed!
@@ -134,7 +134,7 @@ pipeline {
                     bat """
                         if not exist "${BACKUP_DIR}" mkdir "${BACKUP_DIR}"
                         if exist "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" (
-                            xcopy "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" "${BACKUP_DIR}\\${DEPLOY_NAME}-${timestamp}\\" /E /I /Y
+                            xcopy "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" "${BACKUP_DIR}\\${DEPLOY_NAME}-${timestamp}\\\\" /E /I /Y
                             echo Backup created at ${BACKUP_DIR}\\${DEPLOY_NAME}-${timestamp}
                         ) else (
                             echo No existing deployment to backup
@@ -205,7 +205,7 @@ pipeline {
                         )
                         
                         REM Deploy new WAR file
-                        copy "target\\${WAR_FILE}" "${TOMCAT_WEBAPPS}\\"
+                        copy "target\\${WAR_FILE}" "${TOMCAT_WEBAPPS}\\\\"
                         echo Primary deployment completed
                     """
                     
@@ -217,7 +217,7 @@ pipeline {
                         REM Create secondary Tomcat instance if not exists
                         if not exist "${SECONDARY_TOMCAT}" (
                             echo Creating secondary Tomcat instance...
-                            xcopy "${TOMCAT_HOME}" "${SECONDARY_TOMCAT}\\" /E /I /Y /Q
+                            xcopy "${TOMCAT_HOME}" "${SECONDARY_TOMCAT}\\\\" /E /I /Y /Q
                             echo Secondary Tomcat instance created
                         )
                         
@@ -230,27 +230,27 @@ pipeline {
                         )
                         
                         REM Deploy to secondary instance
-                        copy "target\\${WAR_FILE}" "${SECONDARY_TOMCAT}\\webapps\\"
+                        copy "target\\${WAR_FILE}" "${SECONDARY_TOMCAT}\\webapps\\\\"
                         echo Secondary deployment completed
                     """
                     
                     // Update server.xml for secondary instance using a more reliable method
                     echo 'Configuring secondary Tomcat ports...'
-                    bat """
-                        cd /d "${WORKSPACE}"
+                    bat '''
+                        cd /d "''' + env.WORKSPACE + '''"
                         
                         REM Create PowerShell script to update server.xml
                         echo # PowerShell script to update server.xml > update_server.ps1
                         echo try { >> update_server.ps1
-                        echo     \\$xmlPath = '${SECONDARY_TOMCAT}\\conf\\server.xml' >> update_server.ps1
-                        echo     \\$xml = [xml](Get-Content \\$xmlPath) >> update_server.ps1
-                        echo     \\$xml.Server.SetAttribute('port', '8006') >> update_server.ps1
-                        echo     \\$xml.Server.Service.Connector[0].SetAttribute('port', '8083') >> update_server.ps1
-                        echo     \\$xml.Server.Service.Connector[1].SetAttribute('port', '8010') >> update_server.ps1
-                        echo     \\$xml.Save(\\$xmlPath) >> update_server.ps1
+                        echo     $xmlPath = ''' + "'${SECONDARY_TOMCAT}\\conf\\server.xml'" + ''' >> update_server.ps1
+                        echo     $xml = [xml](Get-Content $xmlPath) >> update_server.ps1
+                        echo     $xml.Server.SetAttribute('port', '8006') >> update_server.ps1
+                        echo     $xml.Server.Service.Connector[0].SetAttribute('port', '8083') >> update_server.ps1
+                        echo     $xml.Server.Service.Connector[1].SetAttribute('port', '8010') >> update_server.ps1
+                        echo     $xml.Save($xmlPath) >> update_server.ps1
                         echo     Write-Host 'Server.xml updated successfully' >> update_server.ps1
                         echo } catch { >> update_server.ps1
-                        echo     Write-Host "Error updating server.xml: \\$_.Exception.Message" >> update_server.ps1
+                        echo     Write-Host "Error updating server.xml: $_.Exception.Message" >> update_server.ps1
                         echo     exit 1 >> update_server.ps1
                         echo } >> update_server.ps1
                         
@@ -259,7 +259,7 @@ pipeline {
                         
                         REM Clean up
                         del update_server.ps1
-                    """
+                    '''
                 }
             }
         }
@@ -303,21 +303,21 @@ pipeline {
                             retryCount++
                             echo "Health check attempt ${retryCount}/${maxRetries}..."
                             
-                            bat """
-                                cd /d "${WORKSPACE}"
+                            bat '''
+                                cd /d "''' + env.WORKSPACE + '''"
                                 
                                 REM Create PowerShell health check script
                                 echo # Health check script > health_check.ps1
                                 echo try { >> health_check.ps1
                                 echo     Write-Host 'Checking primary instance (8082)...' >> health_check.ps1
-                                echo     \\$response8082 = Invoke-WebRequest -Uri 'http://localhost:8082/${DEPLOY_NAME}/' -TimeoutSec 15 -UseBasicParsing >> health_check.ps1
-                                echo     Write-Host "Primary instance status: \\$^(\\$response8082.StatusCode^)" >> health_check.ps1
+                                echo     $response8082 = Invoke-WebRequest -Uri 'http://localhost:8082/''' + env.DEPLOY_NAME + '''/' -TimeoutSec 15 -UseBasicParsing >> health_check.ps1
+                                echo     Write-Host "Primary instance status: $($response8082.StatusCode)" >> health_check.ps1
                                 echo. >> health_check.ps1
                                 echo     Write-Host 'Checking secondary instance (8083)...' >> health_check.ps1
-                                echo     \\$response8083 = Invoke-WebRequest -Uri 'http://localhost:8083/${DEPLOY_NAME}/' -TimeoutSec 15 -UseBasicParsing >> health_check.ps1
-                                echo     Write-Host "Secondary instance status: \\$^(\\$response8083.StatusCode^)" >> health_check.ps1
+                                echo     $response8083 = Invoke-WebRequest -Uri 'http://localhost:8083/''' + env.DEPLOY_NAME + '''/' -TimeoutSec 15 -UseBasicParsing >> health_check.ps1
+                                echo     Write-Host "Secondary instance status: $($response8083.StatusCode)" >> health_check.ps1
                                 echo. >> health_check.ps1
-                                echo     if ^(\\$response8082.StatusCode -eq 200 -and \\$response8083.StatusCode -eq 200^) { >> health_check.ps1
+                                echo     if ($response8082.StatusCode -eq 200 -and $response8083.StatusCode -eq 200) { >> health_check.ps1
                                 echo         Write-Host 'SUCCESS: Both instances are healthy' >> health_check.ps1
                                 echo         exit 0 >> health_check.ps1
                                 echo     } else { >> health_check.ps1
@@ -325,7 +325,7 @@ pipeline {
                                 echo         exit 1 >> health_check.ps1
                                 echo     } >> health_check.ps1
                                 echo } catch { >> health_check.ps1
-                                echo     Write-Host "Health check error: \\$^(\\$_.Exception.Message^)" >> health_check.ps1
+                                echo     Write-Host "Health check error: $($_.Exception.Message)" >> health_check.ps1
                                 echo     exit 1 >> health_check.ps1
                                 echo } >> health_check.ps1
                                 
@@ -334,7 +334,7 @@ pipeline {
                                 
                                 REM Clean up
                                 del health_check.ps1
-                            """
+                            '''
                             healthCheckPassed = true
                             echo "Health check passed on attempt ${retryCount}"
                         } catch (Exception e) {
@@ -356,34 +356,34 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 echo 'Verifying deployment status...'
-                bat """
+                bat '''
                     echo.
                     echo ================================
                     echo DEPLOYMENT VERIFICATION
                     echo ================================
                     
-                    cd /d "${WORKSPACE}"
+                    cd /d "''' + env.WORKSPACE + '''"
                     
                     REM Create verification script
                     echo # Deployment verification script > verify.ps1
                     echo Write-Host 'Checking Tomcat processes...' >> verify.ps1
-                    echo Get-Process ^| Where-Object {\\$_.ProcessName -like '*java*'} ^| Select-Object ProcessName, Id, StartTime ^| Format-Table -AutoSize >> verify.ps1
+                    echo Get-Process ^| Where-Object {$_.ProcessName -like '*java*'} ^| Select-Object ProcessName, Id, StartTime ^| Format-Table -AutoSize >> verify.ps1
                     echo. >> verify.ps1
                     echo Write-Host 'Checking deployed applications...' >> verify.ps1
-                    echo if ^(Test-Path '${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}'^ ) { >> verify.ps1
-                    echo     Write-Host '✓ Primary instance ^(8082^): Application deployed and extracted' >> verify.ps1
-                    echo } elseif ^(Test-Path '${TOMCAT_WEBAPPS}\\${WAR_FILE}'^ ) { >> verify.ps1
-                    echo     Write-Host '⚠ Primary instance ^(8082^): WAR file present but not extracted yet' >> verify.ps1
+                    echo if (Test-Path ''' + "'${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}'" + ''') { >> verify.ps1
+                    echo     Write-Host '✓ Primary instance (8082): Application deployed and extracted' >> verify.ps1
+                    echo } elseif (Test-Path ''' + "'${TOMCAT_WEBAPPS}\\${WAR_FILE}'" + ''') { >> verify.ps1
+                    echo     Write-Host '⚠ Primary instance (8082): WAR file present but not extracted yet' >> verify.ps1
                     echo } else { >> verify.ps1
-                    echo     Write-Host '✗ Primary instance ^(8082^): Application NOT found' >> verify.ps1
+                    echo     Write-Host '✗ Primary instance (8082): Application NOT found' >> verify.ps1
                     echo } >> verify.ps1
                     echo. >> verify.ps1
-                    echo if ^(Test-Path '${SECONDARY_TOMCAT}\\webapps\\${DEPLOY_NAME}'^ ) { >> verify.ps1
-                    echo     Write-Host '✓ Secondary instance ^(8083^): Application deployed and extracted' >> verify.ps1
-                    echo } elseif ^(Test-Path '${SECONDARY_TOMCAT}\\webapps\\${WAR_FILE}'^ ) { >> verify.ps1
-                    echo     Write-Host '⚠ Secondary instance ^(8083^): WAR file present but not extracted yet' >> verify.ps1
+                    echo if (Test-Path ''' + "'${SECONDARY_TOMCAT}\\webapps\\${DEPLOY_NAME}'" + ''') { >> verify.ps1
+                    echo     Write-Host '✓ Secondary instance (8083): Application deployed and extracted' >> verify.ps1
+                    echo } elseif (Test-Path ''' + "'${SECONDARY_TOMCAT}\\webapps\\${WAR_FILE}'" + ''') { >> verify.ps1
+                    echo     Write-Host '⚠ Secondary instance (8083): WAR file present but not extracted yet' >> verify.ps1
                     echo } else { >> verify.ps1
-                    echo     Write-Host '✗ Secondary instance ^(8083^): Application NOT found' >> verify.ps1
+                    echo     Write-Host '✗ Secondary instance (8083): Application NOT found' >> verify.ps1
                     echo } >> verify.ps1
                     
                     REM Execute verification
@@ -391,7 +391,7 @@ pipeline {
                     
                     REM Clean up
                     del verify.ps1
-                """
+                '''
             }
         }
     }
