@@ -16,9 +16,10 @@ pipeline {
         GIT_REPO = 'https://github.com/ivy159205/javaproject.git'
         GIT_BRANCH = 'main'
         
-        // Tên project
-        PROJECT_NAME = 'javaproject'
-        WAR_FILE = "${PROJECT_NAME}.war"
+        // Tên project - based on actual Maven build output
+        PROJECT_NAME = 'web-crud-app'
+        WAR_FILE = "web-crud-app-1.0-SNAPSHOT.war"
+        DEPLOY_NAME = 'web-crud-app'
         
         // Ports cho dual deployment
         TOMCAT_PORT_8082 = '8082'
@@ -128,13 +129,13 @@ pipeline {
                 echo 'Creating backup of current deployment...'
                 script {
                     def timestamp = new Date().format('yyyyMMdd-HHmmss')
-                    bat """
-                        if not exist "${BACKUP_DIR}" mkdir "${BACKUP_DIR}"
-                        if exist "${TOMCAT_WEBAPPS}\\${PROJECT_NAME}" (
-                            xcopy "${TOMCAT_WEBAPPS}\\${PROJECT_NAME}" "${BACKUP_DIR}\\${PROJECT_NAME}-${timestamp}\\" /E /I /Y
-                            echo Backup created at ${BACKUP_DIR}\\${PROJECT_NAME}-${timestamp}
-                        )
-                    """
+                        bat """
+                            if not exist "${BACKUP_DIR}" mkdir "${BACKUP_DIR}"
+                            if exist "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" (
+                                xcopy "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" "${BACKUP_DIR}\\${DEPLOY_NAME}-${timestamp}\\" /E /I /Y
+                                echo Backup created at ${BACKUP_DIR}\\${DEPLOY_NAME}-${timestamp}
+                            )
+                        """
                 }
             }
         }
@@ -146,13 +147,20 @@ pipeline {
                     try {
                         bat """
                             cd /d "${TOMCAT_HOME}\\bin"
-                            call shutdown.bat
+                            startup.bat
+                            timeout /t 5 /nobreak
+                            shutdown.bat
                             timeout /t 10 /nobreak
                         """
                     } catch (Exception e) {
                         echo "Warning: Could not gracefully stop Tomcat: ${e.getMessage()}"
                         // Force kill Tomcat processes
-                        bat 'taskkill /F /IM java.exe /FI "WINDOWTITLE eq Tomcat*" || echo No Tomcat processes found'
+                        bat '''
+                            for /f "tokens=2" %%i in ('tasklist /fi "imagename eq java.exe" /fo csv ^| find "java.exe"') do (
+                                taskkill /F /PID %%i 2>nul
+                            )
+                            echo Tomcat processes terminated
+                        '''
                     }
                 }
             }
@@ -165,8 +173,8 @@ pipeline {
                     echo 'Deploying to Tomcat port 8082...'
                     bat """
                         cd /d "${WORKSPACE}"
-                        if exist "${TOMCAT_WEBAPPS}\\${PROJECT_NAME}" (
-                            rmdir /s /q "${TOMCAT_WEBAPPS}\\${PROJECT_NAME}"
+                        if exist "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}" (
+                            rmdir /s /q "${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}"
                         )
                         if exist "${TOMCAT_WEBAPPS}\\${WAR_FILE}" (
                             del /f "${TOMCAT_WEBAPPS}\\${WAR_FILE}"
@@ -195,8 +203,8 @@ pipeline {
                         "
                         
                         REM Deploy to secondary instance
-                        if exist "${secondaryTomcat}\\webapps\\${PROJECT_NAME}" (
-                            rmdir /s /q "${secondaryTomcat}\\webapps\\${PROJECT_NAME}"
+                        if exist "${secondaryTomcat}\\webapps\\${DEPLOY_NAME}" (
+                            rmdir /s /q "${secondaryTomcat}\\webapps\\${DEPLOY_NAME}"
                         )
                         if exist "${secondaryTomcat}\\webapps\\${WAR_FILE}" (
                             del /f "${secondaryTomcat}\\webapps\\${WAR_FILE}"
@@ -244,10 +252,10 @@ pipeline {
                             bat """
                                 powershell -Command "
                                     try {
-                                        \\$response8082 = Invoke-WebRequest -Uri 'http://localhost:8082/${PROJECT_NAME}' -TimeoutSec 10
+                                        \\$response8082 = Invoke-WebRequest -Uri 'http://localhost:8082/${DEPLOY_NAME}' -TimeoutSec 10
                                         Write-Host 'Port 8082 Status Code: ' \\$response8082.StatusCode
                                         
-                                        \\$response8083 = Invoke-WebRequest -Uri 'http://localhost:8083/${PROJECT_NAME}' -TimeoutSec 10
+                                        \\$response8083 = Invoke-WebRequest -Uri 'http://localhost:8083/${DEPLOY_NAME}' -TimeoutSec 10
                                         Write-Host 'Port 8083 Status Code: ' \\$response8083.StatusCode
                                         
                                         if (\\$response8082.StatusCode -eq 200 -and \\$response8083.StatusCode -eq 200) {
@@ -295,13 +303,13 @@ pipeline {
                         Get-Process | Where-Object {\\$_.ProcessName -like '*java*' -and \\$_.MainWindowTitle -like '*Tomcat*'} | Format-Table ProcessName, Id, MainWindowTitle -AutoSize
                         
                         Write-Host 'Checking deployed applications...'
-                        if (Test-Path '${TOMCAT_WEBAPPS}\\${PROJECT_NAME}') {
+                        if (Test-Path '${TOMCAT_WEBAPPS}\\${DEPLOY_NAME}') {
                             Write-Host '✓ Primary instance (8082): Application deployed'
                         } else {
                             Write-Host '✗ Primary instance (8082): Application NOT found'
                         }
                         
-                        if (Test-Path 'D:\\ApacheTomcat\\apache-tomcat-11.0.7-secondary\\webapps\\${PROJECT_NAME}') {
+                        if (Test-Path 'D:\\ApacheTomcat\\apache-tomcat-11.0.7-secondary\\webapps\\${DEPLOY_NAME}') {
                             Write-Host '✓ Secondary instance (8083): Application deployed'
                         } else {
                             Write-Host '✗ Secondary instance (8083): Application NOT found'
@@ -318,8 +326,8 @@ pipeline {
             echo 'DEPLOYMENT COMPLETED SUCCESSFULLY!'
             echo '================================'
             echo 'Application is available at:'
-            echo "- http://localhost:8082/${PROJECT_NAME} (Primary)"
-            echo "- http://localhost:8083/${PROJECT_NAME} (Secondary)"
+            echo "- http://localhost:8082/${DEPLOY_NAME} (Primary)"
+            echo "- http://localhost:8083/${DEPLOY_NAME} (Secondary)"
             echo '- GitHub Repository: https://github.com/ivy159205/javaproject'
             echo '================================'
             
