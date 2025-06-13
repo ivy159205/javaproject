@@ -3,8 +3,8 @@ pipeline {
     
     tools {
         // Định nghĩa Java và Maven versions
-        jdk 'JDK-17' // Hoặc JDK version bạn sử dụng
-        maven 'Maven-3.9' // Hoặc Maven version bạn có
+        jdk 'JDK-23' // Hoặc JDK version bạn sử dụng
+        maven 'Maven-3.9.9' // Hoặc Maven version bạn có
     }
     
     environment {
