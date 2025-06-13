@@ -1,11 +1,7 @@
 pipeline {
     agent any
     
-    tools {
-        // Remove tool declarations or use configured tool names
-        // jdk 'JDK-23' // Comment out until tool is configured in Jenkins
-        // maven 'Maven-3.9.9' // Comment out until tool is configured in Jenkins
-    }
+    // tools block removed - using environment variables instead
     
     environment {
         // Đường dẫn Tomcat và Maven
